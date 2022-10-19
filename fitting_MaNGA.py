@@ -436,7 +436,7 @@ def load_model_sfh(filepath):
     model_sfh = model_sfh[mask].copy()
     return model_ages, model_sfh
 
-def get_advanced_quantities(fit):
+def get_advanced_quantities(fit, save=True):
     """ a workaround of having to recalculate the advanced quantities upon every re-loading of results, saves some time
     But each saved full sample instead occupies much more space than the raw samples .h5 file, so if you don't want this to happen, replace all get_advanced_quantities with bagpipes' own posterior.get_advanced_quantities function """
     # a workaround of having to recalculate the advanced
@@ -458,10 +458,11 @@ def get_advanced_quantities(fit):
     else:
         fit.posterior.get_advanced_quantities()
         # save it, path is pipes/[runID]/[galID]_full_samp.h5
-        dd.io.save(fit.fname + "full_samp.h5", fit.posterior.samples)
-        print(f'Advanced quantities saved in {fit.fname + "full_samp.h5"}.')
+        if save:
+            dd.io.save(fit.fname + "full_samp.h5", fit.posterior.samples)
+            print(f'Advanced quantities saved in {fit.fname + "full_samp.h5"}.')
 
-def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True):
+def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     """ Plots the fitted spectrum plot, including the input and posterior fitted spectrum, residuals and fitted GP noise (if applicable)
 
     Parameters
@@ -474,6 +475,8 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True):
         Size of the figure
     save : bool
         Whether to save the resulting figure. Save path is ./pipes/plots/[runID]/[galID]_fit.pdf
+    save_aq : bool
+        Whether to save the advanced quantities sample dictionary, passed to get_advanced_quantities
     """
 
     # Make the figure
@@ -482,7 +485,7 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True):
               'legend.handlelength': 1}
     matplotlib.rcParams.update(params)
     matplotlib.rcParams['text.usetex'] = True
-    get_advanced_quantities(fit)
+    get_advanced_quantities(fit, save=save_aq)
     
     gal_ID = fit.fname.split('/')[-1][:-1]
     print(gal_ID)
