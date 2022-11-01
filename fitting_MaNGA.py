@@ -479,6 +479,16 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
         Whether to save the advanced quantities sample dictionary, passed to get_advanced_quantities
     """
 
+    # sort out latex labels
+    tex_on = pipes.plotting.tex_on
+    if tex_on:
+        full_spec_label = r'post full spectrum(no noise) $\pm 1 \sigma$'
+        wavelength_label = "$\\lambda / \\mathrm{\\AA}$"
+        
+    else:
+        full_spec_label = 'post full spectrum(no noise) +- 1sigma'
+        wavelength_label = "lambda / A"
+
     # Make the figure
     matplotlib.rcParams.update({'font.size': 16})
     params = {'legend.fontsize': 16,
@@ -576,7 +586,7 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
 
     ax1.fill_between(full_wavs, spec_post[:, 0], spec_post[:, 1],
                     zorder=-1, color="navajowhite", linewidth=0,
-                     label=r'post full spectrum(no noise) $\pm 1 \sigma$')
+                     label=full_spec_label)
 
     fit_obj_full_init = fit_obj.full
     fit_obj.full = True
@@ -628,7 +638,7 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     ax4.set_xlim(ax1.get_xlim())
     ax4.set_ylim(ylim_ax4)
     pipes.plotting.auto_x_ticks(ax4)
-    ax4.set_xlabel("$\\lambda / \\mathrm{\\AA}$")
+    ax4.set_xlabel(wavelength_label)
     ax4.set_ylabel('noise')
     
     if save:
@@ -692,6 +702,19 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
     save : bool
         Whether to save the resulting figure. Save path is ./pipes/plots/[runID]/[galID]_combined_SFH.pdf
     """
+    
+    # sort out latex labels
+    tex_on = pipes.plotting.tex_on
+    if tex_on:
+        Mstar_label = r"formed $\log_{10}M_*$="
+        true_Mstar_label = r"true formed $\log_{10}M_*$="
+        metallicity_label = "$\\mathrm{Z_{*}}/Z_{\\odot}$"
+        
+    else:
+        Mstar_label = "formed log10 M\_*="
+        true_Mstar_label = "true formed log10 M\_*="
+        metallicity_label = "Z\_*/Z\_sun"
+    
     if 'redshift' in fit.posterior.samples.keys():
         post_z = np.median(fit.posterior.samples['redshift'])
     else: post_z = 0.04
@@ -831,7 +854,7 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
     t_burst_text = f't\_burst={t_burst_r[0]}+{t_burst_r[1]}-{t_burst_r[2]}Gyr \n '
     Mstar_r = [np.round(post_Mstar[1],2),np.round(post_Mstar[2]-post_Mstar[1],2),
                  np.round(post_Mstar[1]-post_Mstar[0],2)]
-    Mstar_text = r"formed $\log_{10}M_*$=" + \
+    Mstar_text = Mstar_label + \
                 f'{Mstar_r[0]}+{Mstar_r[1]}-{Mstar_r[2]}'
     if plot_model_sfh:
         ax[0].text(0.03,0.95,
@@ -842,7 +865,7 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
                 t_burst_text +
                 f'true t\_burst={np.round(model_t_burst,2)}Gyr\n' +
                 Mstar_text + '\n' +
-                r"true formed $\log_{10}M_*$=" + str(np.round(np.log10(model_m_total),2))
+                true_Mstar_label + str(np.round(np.log10(model_m_total),2))
                 ,
                 fontsize=14, transform=ax[0].transAxes, bbox=dict(boxstyle='round', facecolor='white'), zorder=20, va='top')
     else:
@@ -909,7 +932,7 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
         ax[2].set_xlim(ax[0].get_xlim())
         ax[2].set_ylim(zmet_ylims)
         ax[2].set_xlabel(ax[0].get_xlabel())
-        ax[2].set_ylabel('$\\mathrm{Z_{*}}/Z_{\\odot}$')
+        ax[2].set_ylabel(metallicity_label)
         ax[2].text(0.03,0.90,
             f"model:{fit.fit_instructions[SFH_comp]['metallicity_type'].replace('_',' ')}",
             fontsize=14, transform=ax[2].transAxes, va='top',
