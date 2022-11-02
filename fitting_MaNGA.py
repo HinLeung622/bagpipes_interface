@@ -484,17 +484,18 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     if tex_on:
         full_spec_label = r'post full spectrum(no noise) $\pm 1 \sigma$'
         wavelength_label = "$\\lambda / \\mathrm{\\AA}$"
+        matplotlib.rcParams['text.usetex'] = True
         
     else:
         full_spec_label = 'post full spectrum(no noise) +- 1sigma'
         wavelength_label = "lambda / A"
+        matplotlib.rcParams['text.usetex'] = False
 
     # Make the figure
     matplotlib.rcParams.update({'font.size': 16})
     params = {'legend.fontsize': 16,
               'legend.handlelength': 1}
     matplotlib.rcParams.update(params)
-    matplotlib.rcParams['text.usetex'] = True
     get_advanced_quantities(fit, save=save_aq)
     
     gal_ID = fit.fname.split('/')[-1][:-1]
@@ -671,17 +672,18 @@ def plot_spec_lite(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     if tex_on:
         full_spec_label = r'post full spectrum(no noise) $\pm 1 \sigma$'
         wavelength_label = "$\\lambda / \\mathrm{\\AA}$"
+        matplotlib.rcParams['text.usetex'] = True
         
     else:
         full_spec_label = 'post full spectrum(no noise) +- 1sigma'
         wavelength_label = "lambda / A"
+        matplotlib.rcParams['text.usetex'] = False
 
     # Make the figure
     matplotlib.rcParams.update({'font.size': 16})
     params = {'legend.fontsize': 16,
               'legend.handlelength': 1}
     matplotlib.rcParams.update(params)
-    matplotlib.rcParams['text.usetex'] = True
     get_advanced_quantities(fit, save=save_aq)
     
     gal_ID = fit.fname.split('/')[-1][:-1]
@@ -811,7 +813,7 @@ def fit_f_burst(ages, sfh, age_at_z, SFH_comp):
     return fburst, tburst
 
 def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
-             model_burstage=None, ninty_region=False, samples=0, save=True):
+             model_burstage=None, ninty_region=False, samples=0, figsize=[15,13], save=True):
     """
     Plots the regular SFH (SFR vs age of universe) plot on the top, cumulative SFH plot on the bottom.
     If a non-constant metallicity model is used, adds in a third plot to show metallicity trends at the bottom
@@ -933,14 +935,14 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
     ################# plotting
     
     if plot_metallicity:
-        fig = plt.figure(figsize=[15,13])
+        fig = plt.figure(figsize=figsize)
         gs = fig.add_gridspec(5,1, hspace=0.4)
         ax1 = plt.subplot(gs[:2])
         ax2 = plt.subplot(gs[2:4])
         ax3 = plt.subplot(gs[4])
         ax = [ax1, ax2, ax3]
     else:
-        fig, ax = plt.subplots(2,1, figsize=[15,10])
+        fig, ax = plt.subplots(2,1, figsize=figsize)
     pipes.plotting.add_sfh_posterior(fit, ax[0], z_axis=False, zorder=9)
     if plot_mean:
         ax[0].plot(post_ages, mean_sfh, color='k', ls='--', zorder=7)
