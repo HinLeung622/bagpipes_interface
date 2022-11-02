@@ -648,6 +648,142 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     
     return fig, [ax1,ax3,ax4]
     
+def plot_spec_lite(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
+    """ Lite version of plot_spec. Plots the fitted spectrum plot, does not plot raw model spectrum
+    and red photometric point
+
+    Parameters
+    ----------
+    fit : object
+        The bagpipes.fitting.fit object
+    fit_obj : object
+        The fitting object of this script
+    figsize : tuple
+        Size of the figure
+    save : bool
+        Whether to save the resulting figure. Save path is ./pipes/plots/[runID]/[galID]_fit.pdf
+    save_aq : bool
+        Whether to save the advanced quantities sample dictionary, passed to get_advanced_quantities
+    """
+
+    # sort out latex labels
+    tex_on = pipes.plotting.tex_on
+    if tex_on:
+        full_spec_label = r'post full spectrum(no noise) $\pm 1 \sigma$'
+        wavelength_label = "$\\lambda / \\mathrm{\\AA}$"
+        
+    else:
+        full_spec_label = 'post full spectrum(no noise) +- 1sigma'
+        wavelength_label = "lambda / A"
+
+    # Make the figure
+    matplotlib.rcParams.update({'font.size': 16})
+    params = {'legend.fontsize': 16,
+              'legend.handlelength': 1}
+    matplotlib.rcParams.update(params)
+    matplotlib.rcParams['text.usetex'] = True
+    get_advanced_quantities(fit, save=save_aq)
+    
+    gal_ID = fit.fname.split('/')[-1][:-1]
+    print(gal_ID)
+
+    fig = plt.figure(figsize=figsize)
+
+    gs1 = matplotlib.gridspec.GridSpec(5, 1, hspace=0., wspace=0.)
+    ax1 = plt.subplot(gs1[:3])
+    ax3 = plt.subplot(gs1[3])
+    ax4 = plt.subplot(gs1[4])
+    
+    # limit to only the first 3 columns
+    if fit.galaxy.spectrum.shape[1] > 3:
+        fit.galaxy.spectrum = fit.galaxy.spectrum[:,:3]
+
+    obs_noise = fit.galaxy.spectrum[:,2].copy()
+    obs_noise[obs_noise>9e10] = np.nan
+    mask = fit.galaxy.spectrum[:, 2] < 1.
+    masked_spec = np.where(fit.galaxy.spectrum[:,2]>1)[0]
+    fit.galaxy.spectrum[mask, 2] = 0.
+
+    y_scale = pipes.plotting.add_spectrum(fit.galaxy.spectrum, ax1, label='fitted obs spec')
+    pipes.plotting.add_spectrum_posterior(fit, ax1, y_scale=y_scale)
+    non_masked_obs_spec = np.delete(fit.galaxy.spectrum, masked_spec, axis=0)
+    if ax1.get_ylim()[0] < 0.9*min(non_masked_obs_spec[:,1])*10**-y_scale:
+        ax1.set_ylim(bottom=0.9*min(non_masked_obs_spec[:,1])*10**-y_scale)
+    if ax1.get_ylim()[1] > 1.1*max(non_masked_obs_spec[:,1])*10**-y_scale:
+        ax1.set_ylim(top=1.1*max(non_masked_obs_spec[:,1])*10**-y_scale)
+
+    if 'noise' in fit.posterior.samples.keys():
+        post_median = np.median(fit.posterior.samples["spectrum"]+fit.posterior.samples["noise"], axis=0)
+    else:
+        post_median = np.median(fit.posterior.samples["spectrum"], axis=0)
+
+    #ax1.plot(fit.galaxy.spectrum[:,0],
+    #         post_median*10**-y_scale,
+    #         color="black", lw=1.0,zorder=11)
+
+    #recover masks on spectrum and plot them as gray bands in residual plot
+    mask_edges = [[masked_spec[0]],[]]
+    for i,indi in enumerate(masked_spec[:-1]):
+        if masked_spec[i+1] - indi > 1:
+            mask_edges[1].append(indi)
+            mask_edges[0].append(masked_spec[i+1])
+    mask_edges[1].append(masked_spec[-1])
+    mask_edges = np.array(mask_edges).T
+    for [mask_min, mask_max] in mask_edges:
+        ax3.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
+                         [-10,-10], [10,10], color='lightgray', zorder=2)
+
+    residuals = (fit.galaxy.spectrum[:,1] - post_median)*10**-y_scale
+    non_masked_res = np.delete(residuals, masked_spec)
+    ax3.axhline(0, color="black", ls="--", lw=1)
+    ax3.plot(np.delete(fit.galaxy.spectrum[:,0], masked_spec), non_masked_res, color="sandybrown",
+             zorder=1)
+    # plot observational uncertainty along residuals
+    ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
+            color='steelblue', lw=1, zorder=4, label='obs noise')
+    if 'noise:scaling' in fit.posterior.samples.keys():
+        median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
+        ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
+                color='cyan', lw=1, zorder=4, ls='--', label='scaled obs noise')
+    #ax3.plot(fit.galaxy.spectrum[:,0], residuals, color="sandybrown",zorder=1)
+    ax3.set_ylabel('residual')
+    ax3.set_ylim([1.1*min(non_masked_res), 1.1*max(non_masked_res)])
+    ax3.set_xlim(ax1.get_xlim())
+
+    # Plot the noise factor
+    ax4.axhline(0, color="black", ls="--", lw=1)
+    if 'noise' in fit.posterior.samples.keys():
+        noise_percentiles = np.percentile(fit.posterior.samples['noise'],(16,50,84),axis=0)*10**-y_scale
+        ax4.plot(fit.galaxy.spectrum[:,0], noise_percentiles[1],color="sandybrown", zorder=1)
+        ax4.fill_between(fit.galaxy.spectrum[:,0], noise_percentiles[0], noise_percentiles[2],
+                         color='navajowhite', zorder=-1)
+        # plot observational uncertainty along GP noise
+        ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
+                color='steelblue', lw=1, zorder=1)
+        ylim_ax4 = ax4.get_ylim()
+        if 'noise:scaling' in fit.posterior.samples.keys():
+            median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
+            ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
+                    color='cyan', lw=1, zorder=1, ls='--', label='scaled obs noise')
+        ax4.set_ylim(ylim_ax4)
+
+    ylim_ax4 = ax4.get_ylim()
+    for [mask_min, mask_max] in mask_edges:
+        ax4.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
+                         [-10,-10], [10,10], color='lightgray', zorder=2)
+    ax4.set_xlim(ax1.get_xlim())
+    ax4.set_ylim(ylim_ax4)
+    pipes.plotting.auto_x_ticks(ax4)
+    ax4.set_xlabel(wavelength_label)
+    ax4.set_ylabel('noise')
+    
+    if save:
+        fname_parts = fit.fname.split('/')
+        fig.savefig('pipes/plots/'+fname_parts[2]+'/'+fname_parts[3]+'fit_lite.pdf')
+    plt.show()
+    
+    return fig, [ax1,ax3,ax4]
+    
 def integrate_sfh(ages, sfh, Mstar=None):
     """
     takes a sfh and integrates it to return a cumulative SFH (normalized to run from 0 to 1) fraction of
