@@ -18,7 +18,8 @@ class fitting:
     skylines_path : str
         Path to the place where "skyline.txt" is stored
     run_params : dict
-        Dictionary that contains the fitting configs
+        Dictionary that contains the fitting configs, overrides other
+        configs
     data : str or bagpipes.model_galaxy object
         only passed if not passing run_params
         if str: Path to the place where the data (in .csv)
@@ -35,6 +36,14 @@ class fitting:
         the spectral resolution by N folds
     sky_masking : bool
         whether to include skyline masks or not
+    mask_em_vals : list, default None
+        the wavelength list in vaccuum (angstroms) at which to create
+        masks for emission lines, each 10AA wide. If None is passed, 
+        the default list is 
+        [3727.092,3729.875,3870.,4102.892,4341.692,4862.683,
+        4960.295,5008.24,6302.046, 6918.6]
+        Currently it is hard coded such that the Halpha, NaD, and SII
+        regions are always masked
     full : bool
         if full == False: limits to MILES range (max 7500 in
         rest-frame)
@@ -49,6 +58,7 @@ class fitting:
         masking, balmer infilling masking, etc
     """
     def __init__(self, skylines_path, run_params=None, data=None, z=0, binby=1, sky_masking=True,
+                 mask_em_vals=None,
                  full=True, model_galaxy_SNR=None, model_data_path=None):
         self.skylines_path = skylines_path
         if run_params is None:
@@ -63,6 +73,8 @@ class fitting:
             self.binby = binby
             self.model_galaxy_SNR = model_galaxy_SNR
             self.extra_masking = False
+            self.balmer_infilling_masking = False
+            self.mask_em_vals = mask_em_vals
         else:
             self.run_params = run_params
             self.loadfromfile = True
@@ -70,12 +82,21 @@ class fitting:
             self.z = run_params['z']
             self.binby = run_params['bin_by']
             self.extra_masking = True
+            if "balmer_infilling_masking" in run_params.keys():
+                self.balmer_infilling_masking = run_params["balmer_infilling_masking"]
+            else:
+                self.balmer_infilling_masking = True
+            if "mask_em_vals" in run_params.keys():
+                self.mask_em_vals = run_params["mask_em_vals"]
+            else:
+                self.mask_em_vals = mask_em_vals
         self.sky_masking = sky_masking
         self.full = full
-        # OII, OII, NeIII, Hdelta, Hgamma, Hbeta, OIII, OIII, OI, ? : in vaccuum
-        self.mask_em_vals = [3727.092,3729.875,3870.,4102.892,
-                             4341.692,4862.683,4960.295,5008.24,
-                             6302.046, 6918.6]
+        if self.mask_em_vals is None:
+            # OII, OII, NeIII, Hdelta, Hgamma, Hbeta, OIII, OIII, OI, ? : in vaccuum
+            self.mask_em_vals = [3727.092,3729.875,3870.,4102.892,
+                                4341.692,4862.683,4960.295,5008.24,
+                                6302.046, 6918.6]
         # these are in air
         self.mask_NaD_range = [5885, 5904]
         # doublet
@@ -154,7 +175,7 @@ class fitting:
         mask.extend(ind[0])
         
         # balmer line infilling masks
-        if "balmer_infilling_masking.txt" in os.listdir(self.data_path):
+        if self.balmer_infilling_masking and "balmer_infilling_masking.txt" in os.listdir(self.data_path):
             lines_balmer = pd.read_fwf(self.data_path+
                             "/balmer_infilling_masking.txt")
             for i,row in lines_balmer.iterrows():
@@ -352,6 +373,18 @@ class get_ceh_array:
         ceh[pre_step_ind] = sfh_dict['metallicity_old']
         ceh[post_step_ind] = sfh_dict['metallicity_burst']
         return ceh
+        
+    def psb_three_step(ages, sfh_dict):
+        step_age2 = sfh_dict['burstage']-sfh_dict['metallicity_burstlength']
+        old_ind = np.where(ages > sfh_dict['burstage'])
+        after_ind = np.where(ages < step_age2)
+        burst_ind = np.isin(np.arange(len(ages)),
+                                np.concatenate([old_ind, after_ind], axis=None), invert=True)
+        ceh = np.zeros(len(ages))
+        ceh[old_ind] = sfh_dict['metallicity_old']
+        ceh[burst_ind] = sfh_dict['metallicity_burst']
+        ceh[after_ind] = sfh_dict['metallicity_old']
+        return ceh
 
 # plotting functions
 # extracted from bagpipes.models.star_formation_history.py, with a bit of tweaking
@@ -462,7 +495,106 @@ def get_advanced_quantities(fit, save=True):
             dd.io.save(fit.fname + "full_samp.h5", fit.posterior.samples)
             print(f'Advanced quantities saved in {fit.fname + "full_samp.h5"}.')
 
-def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
+def hide_obs_noise(spectrum):
+    """ sets all non-infinite obs noise to 0, returns the original obs noise array to undo to original obs noise after function """
+    obs_noise_ = spectrum[:,2].copy()
+    obs_noise = obs_noise_.copy()
+    obs_noise[obs_noise>9e10] = np.nan
+    mask = spectrum[:, 2] < 1.
+    masked_spec = np.where(spectrum[:,2]>1)[0]
+    spectrum[mask, 2] = 0.
+    
+    return masked_spec, obs_noise, obs_noise_
+    
+def get_mask_edges(masked_spec):
+    # get the edges in wavelength for each mask in the spectrum,
+    # used for making vertical gray bands in panels
+    mask_edges = [[masked_spec[0]],[]]
+    for i,indi in enumerate(masked_spec[:-1]):
+        if masked_spec[i+1] - indi > 1:
+            mask_edges[1].append(indi)
+            mask_edges[0].append(masked_spec[i+1])
+    mask_edges[1].append(masked_spec[-1])
+    mask_edges = np.array(mask_edges).T
+    
+    return mask_edges
+    
+def draw_vertical_mask_regions(ax, spectrum, mask_edges, limits=[-1,1], color='lightgray'):
+    # draw the vertical gray bands in panels for spec masks
+    for [mask_min, mask_max] in mask_edges:
+        ax.fill_between([spectrum[:,0][mask_min], spectrum[:,0][mask_max]],
+                         [limits[0]]*2, [limits[1]]*2, color=color, zorder=2)
+                         
+def get_residual_spec(fit, y_scale):
+    # calculate the residual spectrum
+    if 'noise' in fit.posterior.samples.keys():
+        post_median = np.median(fit.posterior.samples["spectrum"]+fit.posterior.samples["noise"], axis=0)
+    else:
+        post_median = np.median(fit.posterior.samples["spectrum"], axis=0)
+
+    residuals = (fit.galaxy.spectrum[:,1] - post_median)*10**-y_scale
+    
+    return residuals
+
+def add_obs_unc(fit, ax, obs_noise, y_scale, freeze_ylims=False):
+    """ adds observational uncertainty lines to the residual and noise panels. Also checks if it has GP:scaling free parameter, if it has, also adds in a scaled obs unc version """
+    ax.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
+            color='steelblue', lw=1, zorder=4, label='obs noise')
+    ylims = ax.get_ylim()
+    if 'noise:scaling' in fit.posterior.samples.keys():
+        median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
+        ax.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
+                color='cyan', lw=1, zorder=4, ls='--', label='scaled obs noise')
+    if freeze_ylims:
+        ax.set_ylim(ylims)
+
+def add_phot_and_full_spec(fit, ax, y_scale, fit_obj, full_spec_label, gal_ID, plot_red_phot=True):
+    """ Extends the spectrum to the right and adds in the red photometric point converted from the portion of the spectrum redward of 7500AA. Also plots the full input spectrum and the (before veldisp adjusted) full model fitted spectrum"""
+    # Calculate posterior median redshift.
+    if "redshift" in fit.fitted_model.params:
+        redshift = np.median(fit.posterior.samples["redshift"])
+    else:
+        redshift = fit.fitted_model.model_components["redshift"]
+
+    # Plot the posterior photometry and full spectrum.
+    full_wavs = fit.posterior.model_galaxy.wavelengths*(1.+redshift)
+
+    spec_post = np.percentile(fit.posterior.samples["spectrum_full"],
+                              (16, 84), axis=0).T*10**-y_scale
+
+    spec_post = spec_post.astype(float)  # fixes weird isfinite error
+
+    ax.plot(full_wavs, spec_post[:, 0], color="navajowhite",
+            zorder=-1)
+
+    ax.plot(full_wavs, spec_post[:, 1], color="navajowhite",
+            zorder=-1)
+
+    ax.fill_between(full_wavs, spec_post[:, 0], spec_post[:, 1],
+                    zorder=-1, color="navajowhite", linewidth=0,
+                     label=full_spec_label)
+
+    fit_obj_full_init = fit_obj.full
+    fit_obj.full = True
+    full_spectrum = fit_obj.load_manga_spec(gal_ID)
+    ax.plot(full_spectrum[:,0], full_spectrum[:,1]*10**-y_scale, color='b', alpha=0.2, zorder=-2,
+             label='non-fitted full obs spec')
+    if plot_red_phot:
+        eff_wave, phot = fit_obj.load_manga_photo_plot(gal_ID)
+        fit_obj.full = fit_obj_full_init
+        ax.errorbar(eff_wave, phot[0]*10**-y_scale,
+                    yerr=phot[1]*10**-y_scale, lw=1,
+                    linestyle=" ", capsize=3, capthick=1, zorder=0,
+                    color="black")
+        #print(eff_wave, phot[0], phot[0]*10**-y_scale)
+
+        ax.scatter(eff_wave, phot[0]*10**-y_scale, color="blue",
+                   s=40, zorder=1, linewidth=1, facecolor="blue",
+                   edgecolor="black", marker="o", label='converted red-end photometry')
+               
+    return full_spectrum[:,0]
+
+def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True, plot_red_phot=True):
     """ Plots the fitted spectrum plot, including the input and posterior fitted spectrum, residuals and fitted GP noise (if applicable)
 
     Parameters
@@ -503,151 +635,103 @@ def plot_spec(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
 
     fig = plt.figure(figsize=figsize)
 
-    gs1 = matplotlib.gridspec.GridSpec(5, 1, hspace=0., wspace=0.)
+    if 'noise' in fit.posterior.samples.keys():
+        gs_rows = 5
+    else:
+        gs_rows = 4
+    gs1 = matplotlib.gridspec.GridSpec(gs_rows, 1, hspace=0., wspace=0.)
     ax1 = plt.subplot(gs1[:3])
     ax3 = plt.subplot(gs1[3])
-    ax4 = plt.subplot(gs1[4])
+    if 'noise' in fit.posterior.samples.keys():
+        # GP noise panel
+        ax4 = plt.subplot(gs1[4])
     
     # limit to only the first 3 columns
     if fit.galaxy.spectrum.shape[1] > 3:
         fit.galaxy.spectrum = fit.galaxy.spectrum[:,:3]
 
-    obs_noise = fit.galaxy.spectrum[:,2].copy()
-    obs_noise[obs_noise>9e10] = np.nan
-    mask = fit.galaxy.spectrum[:, 2] < 1.
-    masked_spec = np.where(fit.galaxy.spectrum[:,2]>1)[0]
-    fit.galaxy.spectrum[mask, 2] = 0.
-
+    masked_spec, obs_noise, obs_noise_ = hide_obs_noise(fit.galaxy.spectrum)
+    
+    # plot observed spec line
     y_scale = pipes.plotting.add_spectrum(fit.galaxy.spectrum, ax1, label='fitted obs spec')
+    # plot main median fitted spec line
     pipes.plotting.add_spectrum_posterior(fit, ax1, y_scale=y_scale)
+    
+    # non masked fluxes to adjust y limits
     non_masked_obs_spec = np.delete(fit.galaxy.spectrum, masked_spec, axis=0)
+    # fix y limits
     if ax1.get_ylim()[0] < 0.9*min(non_masked_obs_spec[:,1])*10**-y_scale:
         ax1.set_ylim(bottom=0.9*min(non_masked_obs_spec[:,1])*10**-y_scale)
     if ax1.get_ylim()[1] > 1.1*max(non_masked_obs_spec[:,1])*10**-y_scale:
         ax1.set_ylim(top=1.1*max(non_masked_obs_spec[:,1])*10**-y_scale)
 
-    if 'noise' in fit.posterior.samples.keys():
-        post_median = np.median(fit.posterior.samples["spectrum"]+fit.posterior.samples["noise"], axis=0)
-    else:
-        post_median = np.median(fit.posterior.samples["spectrum"], axis=0)
-
-    #ax1.plot(fit.galaxy.spectrum[:,0],
-    #         post_median*10**-y_scale,
-    #         color="black", lw=1.0,zorder=11)
-
     #recover masks on spectrum and plot them as gray bands in residual plot
-    mask_edges = [[masked_spec[0]],[]]
-    for i,indi in enumerate(masked_spec[:-1]):
-        if masked_spec[i+1] - indi > 1:
-            mask_edges[1].append(indi)
-            mask_edges[0].append(masked_spec[i+1])
-    mask_edges[1].append(masked_spec[-1])
-    mask_edges = np.array(mask_edges).T
-    for [mask_min, mask_max] in mask_edges:
-        ax3.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
-                         [-10,-10], [10,10], color='lightgray', zorder=2)
+    if len(masked_spec) > 0:
+        mask_edges = get_mask_edges(masked_spec)
+        draw_vertical_mask_regions(ax3, fit.galaxy.spectrum, mask_edges, limits=[-10,10])
 
-    residuals = (fit.galaxy.spectrum[:,1] - post_median)*10**-y_scale
+    # calculate residuals
+    residuals = get_residual_spec(fit, y_scale)
+    # plot residuals
     non_masked_res = np.delete(residuals, masked_spec)
     ax3.axhline(0, color="black", ls="--", lw=1)
-    ax3.plot(np.delete(fit.galaxy.spectrum[:,0], masked_spec), non_masked_res, color="sandybrown",
-             zorder=1)
+    ax3.plot(np.delete(fit.galaxy.spectrum[:,0], masked_spec), non_masked_res, color="sandybrown", zorder=1)
+             
     # plot observational uncertainty along residuals
-    ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
-            color='steelblue', lw=1, zorder=4, label='obs noise')
-    if 'noise:scaling' in fit.posterior.samples.keys():
-        median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
-        ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
-                color='cyan', lw=1, zorder=4, ls='--', label='scaled obs noise')
-    #ax3.plot(fit.galaxy.spectrum[:,0], residuals, color="sandybrown",zorder=1)
+    add_obs_unc(fit, ax3, obs_noise, y_scale)
     ax3.set_ylabel('residual')
     ax3.set_ylim([1.1*min(non_masked_res), 1.1*max(non_masked_res)])
 
-    #extend posterior spectrum
-    # Calculate posterior median redshift.
-    if "redshift" in fit.fitted_model.params:
-        redshift = np.median(fit.posterior.samples["redshift"])
-
+    #extend posterior spectrum, add red photometric point, etc
+    if plot_red_phot:
+        full_spectrum_waves = add_phot_and_full_spec(fit, ax1, y_scale, fit_obj, full_spec_label, gal_ID, plot_red_phot=plot_red_phot)
+        spec_xlim = [min(fit.galaxy.spectrum[:,0]),max(full_spectrum_waves)]
     else:
-        redshift = fit.fitted_model.model_components["redshift"]
-
-    # Plot the posterior photometry and full spectrum.
-    full_wavs = fit.posterior.model_galaxy.wavelengths*(1.+redshift)
-
-    spec_post = np.percentile(fit.posterior.samples["spectrum_full"],
-                              (16, 84), axis=0).T*10**-y_scale
-
-    spec_post = spec_post.astype(float)  # fixes weird isfinite error
-
-    ax1.plot(full_wavs, spec_post[:, 0], color="navajowhite",
-            zorder=-1)
-
-    ax1.plot(full_wavs, spec_post[:, 1], color="navajowhite",
-            zorder=-1)
-
-    ax1.fill_between(full_wavs, spec_post[:, 0], spec_post[:, 1],
-                    zorder=-1, color="navajowhite", linewidth=0,
-                     label=full_spec_label)
-
-    fit_obj_full_init = fit_obj.full
-    fit_obj.full = True
-    full_spectrum = fit_obj.load_manga_spec(gal_ID)
-    ax1.plot(full_spectrum[:,0], full_spectrum[:,1]*10**-y_scale, color='b', alpha=0.2, zorder=-2,
-             label='non-fitted full obs spec')
-    eff_wave, phot = fit_obj.load_manga_photo_plot(gal_ID)
-    fit_obj.full = fit_obj_full_init
-    ax1.errorbar(eff_wave, phot[0]*10**-y_scale,
-                yerr=phot[1]*10**-y_scale, lw=1,
-                linestyle=" ", capsize=3, capthick=1, zorder=0,
-                color="black")
-    #print(eff_wave, phot[0], phot[0]*10**-y_scale)
-
-    ax1.scatter(eff_wave, phot[0]*10**-y_scale, color="blue",
-               s=40, zorder=1, linewidth=1, facecolor="blue",
-               edgecolor="black", marker="o", label='converted red-end photometry')
-
-    if fit.galaxy.photometry_exists:
-        text = 'photometric point fitted'
-    else:
-        text = 'photometric point NOT fitted'
-    ax1.text(0.72,0.56, text, transform=ax1.transAxes)
-    ax1.legend(loc='upper right')
-    ax1.set_xlim([min(fit.galaxy.spectrum[:,0]),9500])
+        spec_xlim = [min(fit.galaxy.spectrum[:,0]),max(fit.galaxy.spectrum[:,0])]
+    
+    # indicate if photometric point was used
+    if plot_red_phot:
+        if fit.galaxy.photometry_exists:
+            text = 'photometric point fitted'
+        else:
+            text = 'photometric point NOT fitted'
+        ax1.text(0.72,0.56, text, transform=ax1.transAxes)
+        ax1.legend(loc='upper right')
+    ax1.set_xlim(spec_xlim)
     ax3.set_xlim(ax1.get_xlim())
 
     # Plot the noise factor
-    ax4.axhline(0, color="black", ls="--", lw=1)
     if 'noise' in fit.posterior.samples.keys():
+        ax4.axhline(0, color="black", ls="--", lw=1)
+        
         noise_percentiles = np.percentile(fit.posterior.samples['noise'],(16,50,84),axis=0)*10**-y_scale
         ax4.plot(fit.galaxy.spectrum[:,0], noise_percentiles[1],color="sandybrown", zorder=1)
         ax4.fill_between(fit.galaxy.spectrum[:,0], noise_percentiles[0], noise_percentiles[2],
                          color='navajowhite', zorder=-1)
         # plot observational uncertainty along GP noise
-        ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
-                color='steelblue', lw=1, zorder=1)
-        ylim_ax4 = ax4.get_ylim()
-        if 'noise:scaling' in fit.posterior.samples.keys():
-            median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
-            ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
-                    color='cyan', lw=1, zorder=1, ls='--', label='scaled obs noise')
-        ax4.set_ylim(ylim_ax4)
+        add_obs_unc(fit, ax4, obs_noise, y_scale, freeze_ylims=True)
 
-    ylim_ax4 = ax4.get_ylim()
-    for [mask_min, mask_max] in mask_edges:
-        ax4.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
-                         [-10,-10], [10,10], color='lightgray', zorder=2)
-    ax4.set_xlim(ax1.get_xlim())
-    ax4.set_ylim(ylim_ax4)
-    pipes.plotting.auto_x_ticks(ax4)
-    ax4.set_xlabel(wavelength_label)
-    ax4.set_ylabel('noise')
+        ylim_ax4 = ax4.get_ylim()
+        if len(masked_spec) > 0:
+            draw_vertical_mask_regions(ax4, fit.galaxy.spectrum, mask_edges, limits=[-10,10])
+        ax4.set_xlim(ax1.get_xlim())
+        ax4.set_ylim(ylim_ax4)
+        pipes.plotting.auto_x_ticks(ax4)
+        ax4.set_xlabel(wavelength_label)
+        ax4.set_ylabel('noise')
     
     if save:
         fname_parts = fit.fname.split('/')
         fig.savefig('pipes/plots/'+fname_parts[2]+'/'+fname_parts[3]+'fit.pdf')
     plt.show()
     
-    return fig, [ax1,ax3,ax4]
+    # return obs noise to normal
+    fit.galaxy.spectrum[:, 2] = obs_noise_
+    
+    if 'noise' in fit.posterior.samples.keys():
+        return fig, [ax1,ax3,ax4]
+    else:
+        return fig, [ax1,ax3]
     
 def plot_spec_lite(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
     """ Lite version of plot_spec. Plots the fitted spectrum plot, does not plot raw model spectrum
@@ -691,100 +775,128 @@ def plot_spec_lite(fit, fit_obj, figsize=(15, 9.), save=True, save_aq=True):
 
     fig = plt.figure(figsize=figsize)
 
-    gs1 = matplotlib.gridspec.GridSpec(5, 1, hspace=0., wspace=0.)
+    if 'noise' in fit.posterior.samples.keys():
+        gs_rows = 5
+    else:
+        gs_rows = 4
+    gs1 = matplotlib.gridspec.GridSpec(gs_rows, 1, hspace=0., wspace=0.)
     ax1 = plt.subplot(gs1[:3])
     ax3 = plt.subplot(gs1[3])
-    ax4 = plt.subplot(gs1[4])
+    if 'noise' in fit.posterior.samples.keys():
+        # GP noise panel
+        ax4 = plt.subplot(gs1[4])
     
     # limit to only the first 3 columns
     if fit.galaxy.spectrum.shape[1] > 3:
         fit.galaxy.spectrum = fit.galaxy.spectrum[:,:3]
 
-    obs_noise = fit.galaxy.spectrum[:,2].copy()
-    obs_noise[obs_noise>9e10] = np.nan
-    mask = fit.galaxy.spectrum[:, 2] < 1.
-    masked_spec = np.where(fit.galaxy.spectrum[:,2]>1)[0]
-    fit.galaxy.spectrum[mask, 2] = 0.
+    masked_spec, obs_noise, obs_noise_ = hide_obs_noise(fit.galaxy.spectrum)
 
+    # plot observed spec line
     y_scale = pipes.plotting.add_spectrum(fit.galaxy.spectrum, ax1, label='fitted obs spec')
+    # plot main median fitted spec line
     pipes.plotting.add_spectrum_posterior(fit, ax1, y_scale=y_scale)
+    
+    # non masked fluxes to adjust y limits
     non_masked_obs_spec = np.delete(fit.galaxy.spectrum, masked_spec, axis=0)
+    # fix y limits
     if ax1.get_ylim()[0] < 0.9*min(non_masked_obs_spec[:,1])*10**-y_scale:
         ax1.set_ylim(bottom=0.9*min(non_masked_obs_spec[:,1])*10**-y_scale)
     if ax1.get_ylim()[1] > 1.1*max(non_masked_obs_spec[:,1])*10**-y_scale:
         ax1.set_ylim(top=1.1*max(non_masked_obs_spec[:,1])*10**-y_scale)
 
-    if 'noise' in fit.posterior.samples.keys():
-        post_median = np.median(fit.posterior.samples["spectrum"]+fit.posterior.samples["noise"], axis=0)
-    else:
-        post_median = np.median(fit.posterior.samples["spectrum"], axis=0)
+        #recover masks on spectrum and plot them as gray bands in residual plot
+    mask_edges = get_mask_edges(masked_spec)
+    draw_vertical_mask_regions(ax3, fit.galaxy.spectrum, mask_edges, limits=[-10,10])
 
-    #ax1.plot(fit.galaxy.spectrum[:,0],
-    #         post_median*10**-y_scale,
-    #         color="black", lw=1.0,zorder=11)
-
-    #recover masks on spectrum and plot them as gray bands in residual plot
-    mask_edges = [[masked_spec[0]],[]]
-    for i,indi in enumerate(masked_spec[:-1]):
-        if masked_spec[i+1] - indi > 1:
-            mask_edges[1].append(indi)
-            mask_edges[0].append(masked_spec[i+1])
-    mask_edges[1].append(masked_spec[-1])
-    mask_edges = np.array(mask_edges).T
-    for [mask_min, mask_max] in mask_edges:
-        ax3.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
-                         [-10,-10], [10,10], color='lightgray', zorder=2)
-
-    residuals = (fit.galaxy.spectrum[:,1] - post_median)*10**-y_scale
+    # calculate residuals
+    residuals = get_residual_spec(fit, y_scale)
+    # plot residuals
     non_masked_res = np.delete(residuals, masked_spec)
     ax3.axhline(0, color="black", ls="--", lw=1)
-    ax3.plot(np.delete(fit.galaxy.spectrum[:,0], masked_spec), non_masked_res, color="sandybrown",
-             zorder=1)
+    ax3.plot(np.delete(fit.galaxy.spectrum[:,0], masked_spec), non_masked_res, color="sandybrown", zorder=1)
+             
     # plot observational uncertainty along residuals
-    ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
-            color='steelblue', lw=1, zorder=4, label='obs noise')
-    if 'noise:scaling' in fit.posterior.samples.keys():
-        median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
-        ax3.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
-                color='cyan', lw=1, zorder=4, ls='--', label='scaled obs noise')
-    #ax3.plot(fit.galaxy.spectrum[:,0], residuals, color="sandybrown",zorder=1)
+    add_obs_unc(fit, ax3, obs_noise, y_scale)
     ax3.set_ylabel('residual')
     ax3.set_ylim([1.1*min(non_masked_res), 1.1*max(non_masked_res)])
     ax3.set_xlim(ax1.get_xlim())
 
     # Plot the noise factor
-    ax4.axhline(0, color="black", ls="--", lw=1)
     if 'noise' in fit.posterior.samples.keys():
+        ax4.axhline(0, color="black", ls="--", lw=1)
+        
         noise_percentiles = np.percentile(fit.posterior.samples['noise'],(16,50,84),axis=0)*10**-y_scale
         ax4.plot(fit.galaxy.spectrum[:,0], noise_percentiles[1],color="sandybrown", zorder=1)
         ax4.fill_between(fit.galaxy.spectrum[:,0], noise_percentiles[0], noise_percentiles[2],
                          color='navajowhite', zorder=-1)
         # plot observational uncertainty along GP noise
-        ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*10**-y_scale,
-                color='steelblue', lw=1, zorder=1)
-        ylim_ax4 = ax4.get_ylim()
-        if 'noise:scaling' in fit.posterior.samples.keys():
-            median_noise_scale = np.median(fit.posterior.samples['noise:scaling'])
-            ax4.plot(fit.galaxy.spectrum[:,0], obs_noise*median_noise_scale*10**-y_scale,
-                    color='cyan', lw=1, zorder=1, ls='--', label='scaled obs noise')
-        ax4.set_ylim(ylim_ax4)
+        add_obs_unc(fit, ax4, obs_noise, y_scale, freeze_ylims=True)
 
-    ylim_ax4 = ax4.get_ylim()
-    for [mask_min, mask_max] in mask_edges:
-        ax4.fill_between([fit.galaxy.spectrum[:,0][mask_min], fit.galaxy.spectrum[:,0][mask_max]],
-                         [-10,-10], [10,10], color='lightgray', zorder=2)
-    ax4.set_xlim(ax1.get_xlim())
-    ax4.set_ylim(ylim_ax4)
-    pipes.plotting.auto_x_ticks(ax4)
-    ax4.set_xlabel(wavelength_label)
-    ax4.set_ylabel('noise')
+        ylim_ax4 = ax4.get_ylim()
+        draw_vertical_mask_regions(ax4, fit.galaxy.spectrum, mask_edges, limits=[-10,10])
+        ax4.set_xlim(ax1.get_xlim())
+        ax4.set_ylim(ylim_ax4)
+        pipes.plotting.auto_x_ticks(ax4)
+        ax4.set_xlabel(wavelength_label)
+        ax4.set_ylabel('noise')
     
     if save:
         fname_parts = fit.fname.split('/')
         fig.savefig('pipes/plots/'+fname_parts[2]+'/'+fname_parts[3]+'fit_lite.pdf')
     plt.show()
     
-    return fig, [ax1,ax3,ax4]
+    # return obs noise to normal
+    fit.galaxy.spectrum[:, 2] = obs_noise_
+    
+    if 'noise' in fit.posterior.samples.keys():
+        return fig, [ax1,ax3,ax4]
+    else:
+        return fig, [ax1,ax3]
+    
+def _cal_residual_indicators(gal_spec, model_spec_post):
+    """ The calculations """
+    # 1. measure abs residual between predicted spectrum vs obs spec, mask away inf obs noise
+    model_spec_abs_obserr_multiple = np.abs(model_spec_post - gal_spec[:,1])/gal_spec[:,2]
+    mask = gal_spec[:,2] < 1
+    model_spec_abs_obserr_multiple = model_spec_abs_obserr_multiple[:,mask]
+
+    # 2. get width of wavelength bins, remove those that are masked by inf obs noise
+    wave_bin_diffs = np.diff(gal_spec[:,0])
+    wave_bin_widths = (wave_bin_diffs[:-1]+wave_bin_diffs[1:])/2
+    wave_bin_widths = np.insert(wave_bin_widths, [0,-1], [wave_bin_diffs[0], wave_bin_diffs[-1]])
+    wave_bin_widths = wave_bin_widths[mask]
+
+    # 3. Integrate obs residual divided by sigma by wave widths
+    total_prediction_err = np.sum(model_spec_abs_obserr_multiple*wave_bin_widths, axis=1)
+
+    # 4. divide by summed bin widths
+    total_prediction_err /= np.sum(wave_bin_widths)
+    
+    return total_prediction_err
+
+def cal_residual_indicators(fit):
+    """
+    Calculates the spectrum-averaged number of times of observational uncertainties is each model
+    predicted spectrum deviating away from the input galaxy spectrum, in absolute values. Masked wavelengths
+    are ignored.
+    The exact formula for one sample's value is:
+    sum(abs(obs-predicted)/(sigma*delta_lambda)) / sum(delta_lambda)
+    where
+    obs = input observed fluxes
+    predicted = model predicted fluxes, can be from the physical model only, or with contributions from
+                noise components
+    sigma = observational uncertainty array
+    delta_lambda = width of each wavelength bin
+    """
+    model_spec_post = fit.posterior.samples["spectrum"]
+    model_prediction_err = _cal_residual_indicators(fit.galaxy.spectrum, model_spec_post)
+    fit.posterior.samples['model_prediction_err'] = model_prediction_err
+    
+    if "noise" in fit.posterior.samples.keys():
+        model_noise_spec_post = fit.posterior.samples["spectrum"] + fit.posterior.samples["noise"]
+        model_noise_prediction_err = _cal_residual_indicators(fit.galaxy.spectrum, model_noise_spec_post)
+        fit.posterior.samples['model_noise_prediction_err'] = model_noise_prediction_err
     
 def integrate_sfh(ages, sfh, Mstar=None):
     """
@@ -841,8 +953,14 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
         Whether to save the resulting figure. Save path is ./pipes/plots/[runID]/[galID]_combined_SFH.pdf
     """
     
+    # test if using neutilus version of bagpipes or normal bagpipes
+    if 'pipes_n' in globals():
+        bagpipes_module = pipes_n
+    else:
+        bagpipes_module = pipes
+    
     # sort out latex labels
-    tex_on = pipes.plotting.tex_on
+    tex_on = bagpipes_module.plotting.tex_on
     if tex_on:
         Mstar_label = r"formed $\log_{10}M_*$="
         true_Mstar_label = r"true formed $\log_{10}M_*$="
@@ -856,21 +974,23 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
     if 'redshift' in fit.posterior.samples.keys():
         post_z = np.median(fit.posterior.samples['redshift'])
     else: post_z = 0.04
-    age_at_z = pipes.utils.cosmo.age(post_z).value
+    age_at_z = bagpipes_module.utils.cosmo.age(post_z).value
     
     #identify SFH component used
-    if "psb2" in fit.fit_instructions.keys():
-        SFH_comp = "psb2"
-    elif "psb_wild2020" in fit.fit_instructions.keys():
-        SFH_comp = "psb_wild2020"
-    elif "psb_twin" in fit.fit_instructions.keys():
-        SFH_comp = "psb_twin"
+    comp_list = list(fit.fit_instructions)
+    SFH_comps = ([k for k in comp_list if k in dir(bagpipes_module.models.star_formation_history)]
+                 + [k for k in comp_list if k[:-1] in dir(bagpipes_module.models.star_formation_history)])
+    if len(SFH_comps) == 0:
+        raise ValueError("Cannot identify SFH component used.")
+    elif len(SFH_comps) > 1:
+        raise ValueError("Multiple SFH components used, cannot identify.")
+    SFH_comp = SFH_comps[0]
 
     #posterior sfh
     post_sfh = fit.posterior.samples['sfh']
     #median_sfh = np.median(post_sfh,axis=0)
     mean_sfh = np.mean(post_sfh,axis=0)
-    age_of_universe = np.interp(post_z, pipes.utils.z_array, pipes.utils.age_at_z)
+    age_of_universe = np.interp(post_z, bagpipes_module.utils.z_array, bagpipes_module.utils.age_at_z)
     post_ages = age_of_universe - fit.posterior.sfh.ages*10**-9
     post_ages_int = post_ages.copy()[::-1]*10**9
 
@@ -943,7 +1063,7 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
         ax = [ax1, ax2, ax3]
     else:
         fig, ax = plt.subplots(2,1, figsize=figsize)
-    pipes.plotting.add_sfh_posterior(fit, ax[0], z_axis=False, zorder=9)
+    bagpipes_module.plotting.add_sfh_posterior(fit, ax[0], z_axis=False, zorder=9)
     if plot_mean:
         ax[0].plot(post_ages, mean_sfh, color='k', ls='--', zorder=7)
     if ninty_region:
@@ -1017,7 +1137,7 @@ def plot_sfh(fit, model_sfh=None, plot_mean=False, model_f_burst=None,
                bbox=dict(boxstyle='round', facecolor='white'), zorder=20, va='top')
     
     ax[0].set_xlim(ax[0].get_xlim()[::-1])
-    pipes.plotting.add_z_axis(ax[0])
+    bagpipes_module.plotting.add_z_axis(ax[0])
     
     if plot_model_sfh:
         ax[1].plot(model_ages[::-1], c_model_sfh_val, zorder=9)

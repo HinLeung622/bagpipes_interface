@@ -166,6 +166,18 @@ class get_ceh_array:
         ceh[pre_step_ind] = sfh_dict['metallicity_old']
         ceh[post_step_ind] = sfh_dict['metallicity_burst']
         return ceh
+        
+    def psb_three_step(ages, sfh_dict):
+        step_age2 = sfh_dict['burstage']-sfh_dict['metallicity_burstlength']
+        old_ind = np.where(ages > sfh_dict['burstage'])
+        after_ind = np.where(ages < step_age2)
+        burst_ind = np.isin(np.arange(len(ages)),
+                                np.concatenate([old_ind, after_ind], axis=None), invert=True)
+        ceh = np.zeros(len(ages))
+        ceh[old_ind] = sfh_dict['metallicity_old']
+        ceh[burst_ind] = sfh_dict['metallicity_burst']
+        ceh[after_ind] = sfh_dict['metallicity_old']
+        return ceh
 
 # plotting functions
 # extracted from bagpipes.models.star_formation_history.py, with a bit of tweaking
@@ -250,7 +262,9 @@ def load_model_sfh(filepath):
     model_sfh = model_sfh[mask].copy()
     return model_ages, model_sfh
 
-def get_advanced_quantities(fit):
+def get_advanced_quantities(fit, save=True):
+    """ a workaround of having to recalculate the advanced quantities upon every re-loading of results, saves some time
+    But each saved full sample instead occupies much more space than the raw samples .h5 file, so if you don't want this to happen, replace all get_advanced_quantities with bagpipes' own posterior.get_advanced_quantities function """
     # a workaround of having to recalculate the advanced
     # quantities upon every re-loading of results
     import os
@@ -270,10 +284,11 @@ def get_advanced_quantities(fit):
     else:
         fit.posterior.get_advanced_quantities()
         # save it, path is pipes/[runID]/[galID]_full_samp.h5
-        dd.io.save(fit.fname + "full_samp.h5", fit.posterior.samples)
-        print(f'Advanced quantities saved in {fit.fname + "full_samp.h5"}.')
+        if save:
+            dd.io.save(fit.fname + "full_samp.h5", fit.posterior.samples)
+            print(f'Advanced quantities saved in {fit.fname + "full_samp.h5"}.')
 
-def plot_spec(fit, ID, runID, save=True):
+def plot_spec(fit, figsize=(12,5), save=True, save_aq=True):
 
     # Make the figure
     matplotlib.rcParams.update({'font.size': 16})
@@ -281,10 +296,9 @@ def plot_spec(fit, ID, runID, save=True):
               'legend.handlelength': 1}
     matplotlib.rcParams.update(params)
     matplotlib.rcParams['text.usetex'] = True
-    get_advanced_quantities(fit)
+    get_advanced_quantities(fit, save=save_aq)
 
-    naxes=1
-    fig = plt.figure(figsize=(12, 5.*naxes))
+    fig = plt.figure(figsize=figsize)
 
     gs1 = matplotlib.gridspec.GridSpec(4, 1, hspace=0., wspace=0.)
     ax1 = plt.subplot(gs1[:3])
@@ -309,8 +323,11 @@ def plot_spec(fit, ID, runID, save=True):
     ax3.set_xlabel("$\\lambda / \\mathrm{\\AA}$")
     ax3.set_ylabel('residual')
     if save:
-        fig.savefig('pipes/plots/'+runID+'/'+ID+'_fit.pdf')
+        fname_parts = fit.fname.split('/')
+        fig.savefig('pipes/plots/'+fname_parts[2]+'/'+fname_parts[3]+'fit.pdf')
     plt.show()
+    
+    return fig,[ax1,ax3]
     
 def integrate_sfh(ages, sfh, Mstar=None):
     """ 
@@ -338,7 +355,7 @@ def fit_f_burst(ages, sfh, age_at_z, SFH_comp):
     tburst = age_at_z - burstage
     return fburst, tburst
 
-def plot_sfh(fit, model_lookbacktime, model_sfh, ID, runID, plot_mean=False, model_f_burst=None, 
+def plot_sfh(fit, model_sfh, plot_mean=False, model_f_burst=None,
              model_burstage=None, ninty_region=False, samples=0, save=True):
     """
     Plots the regular SFH (SFR vs age of universe) plot on the top, cumulative SFH plot on the bottom
@@ -368,7 +385,8 @@ def plot_sfh(fit, model_lookbacktime, model_sfh, ID, runID, plot_mean=False, mod
     #c_median_sfh = integrate_sfh(post_ages_int, median_sfh[::-1], Mstar=post_m_total)
 
     #model sfh
-    model_sfh = model_sfh.copy()
+    model_lookbacktime = model_sfh[:,0]
+    model_sfh = model_sfh[:,1]
     model_ages = age_at_z-model_lookbacktime.copy()
     model_ages_int = model_ages.copy()[::-1]*10**9
     model_m_total = np.trapz(y=model_sfh[::-1], x=model_ages_int)
@@ -548,7 +566,8 @@ def plot_sfh(fit, model_lookbacktime, model_sfh, ID, runID, plot_mean=False, mod
                 ax[2].plot(post_ages, zmet_evo[samp_i], color='black', alpha=0.3, ls='--', zorder=5)
     
     if save:
-        fig.savefig('pipes/plots/'+runID+'/'+ID+'_combined_sfh.pdf')
+        fname_parts = fit.fname.split('/')
+        fig.savefig('pipes/plots/'+fname_parts[2]+'/'+fname_parts[3]+'combined_sfh.pdf')
     plt.show()
     
     return fig,ax

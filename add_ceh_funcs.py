@@ -239,6 +239,69 @@ def psb_two_step(self, comp, sfh):
         #    print('help')
     
     return zmet_comp*np.expand_dims(sfh, axis=0)
+    
+def psb_three_step(self, comp, sfh):
+    """ 3-step metallicities (time-varying!) for psb SFH shape,
+    first shift at burstage, second shift free """
+    
+    zmet_old = comp["metallicity_old"]
+    zmet_burst = comp["metallicity_burst"]
+    zmet_after = comp["metallicity_old"]#comp["metallicity_after"]
+    burstage = comp["burstage"]*10**9
+    burstlength = comp["metallicity_burstlength"]*10**9
+    step_age2 = burstage-burstlength
+    
+    # get SSP ages
+    SSP_ages = config.age_sampling
+    SSP_age_bins = config.age_bins
+    
+    # loop through all SSP ages
+    zmet_comp = np.zeros((self.zmet_vals.shape[0], sfh.shape[0]))
+    for i,agei in enumerate(SSP_ages):
+        # detect if the SSP age's higher boundary > tburst and lower boundary < tburst
+        if SSP_age_bins[i+1]>burstage and SSP_age_bins[i]<burstage:
+            # interp between to get metallicity at this SSP
+            width = SSP_age_bins[i+1] - SSP_age_bins[i]
+            old_weight = (SSP_age_bins[i+1] - burstage)/width
+            new_weight = (burstage - SSP_age_bins[i])/width
+            SSP_zmet = old_weight*zmet_old + new_weight*zmet_burst
+            # interp metallicity (delta-style) to get weights with the interped metallicity
+            zmet_comp[:,i] = getattr(self, 'delta'
+                                        )(comp, sfh, zmet=SSP_zmet, nested=True)
+            
+        elif SSP_age_bins[i+1]>step_age2 and SSP_age_bins[i]<step_age2:
+            # interp between to get metallicity at this SSP
+            width = SSP_age_bins[i+1] - SSP_age_bins[i]
+            old_weight = (SSP_age_bins[i+1] - step_age2)/width
+            new_weight = (step_age2 - SSP_age_bins[i])/width
+            SSP_zmet = old_weight*zmet_burst + new_weight*zmet_after
+            # interp metallicity (delta-style) to get weights with the interped metallicity
+            zmet_comp[:,i] = getattr(self, 'delta'
+                                        )(comp, sfh, zmet=SSP_zmet, nested=True)
+        
+        # if before tburst
+        elif SSP_age_bins[i]>burstage:
+            # interp metallicity (delta-style) to get weights with the earlier metallicity
+            zmet_comp[:,i] = getattr(self, 'delta'
+                                        )(comp, sfh, zmet=zmet_old, nested=True)
+            
+        # if after tburst and before second step
+        elif SSP_age_bins[i+1]<burstage and SSP_age_bins[i]>step_age2:
+            # interp metallicity (delta-style) to get weights with the starburst metallicity
+            zmet_comp[:,i] = getattr(self, 'delta'
+                                        )(comp, sfh, zmet=zmet_burst, nested=True)
+            
+        # if before second step
+        elif SSP_age_bins[i+1]<step_age2:
+            # interp metallicity (delta-style) to get weights with the after metallicity
+            zmet_comp[:,i] = getattr(self, 'delta'
+                                        )(comp, sfh, zmet=zmet_after, nested=True)
+            
+        #else:
+        #    print('help')
+    
+    #print(zmet_comp)
+    return zmet_comp*np.expand_dims(sfh, axis=0)
 
 def psb_linear_step(self, comp, sfh):
     """ 
@@ -383,5 +446,6 @@ pipes.models.chemical_enrichment_history.lognorm = lognorm
 pipes.models.chemical_enrichment_history.constant = constant
 pipes.models.chemical_enrichment_history.two_step = two_step
 pipes.models.chemical_enrichment_history.psb_two_step = psb_two_step
+pipes.models.chemical_enrichment_history.psb_three_step = psb_three_step
 pipes.models.chemical_enrichment_history.psb_linear_step = psb_linear_step
 pipes.models.chemical_enrichment_history.linear_step = linear_step
